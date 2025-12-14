@@ -1,20 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download } from 'lucide-react';
+import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download, Music } from 'lucide-react';
 import { generateScriptFromImage, synthesizeScriptAudio } from './services/geminiService';
-import { decodeBase64, decodeAudioData, playAudioBuffer, createWavBlob } from './services/audioUtils';
+import { decodeBase64, decodeAudioData, playAudioBuffer, createWavBlob, mixAudioBuffers, generateProceduralBgm } from './services/audioUtils';
 import { ScriptData, AppState } from './types';
 
 const INITIAL_SITUATION = "ピザにパイナップルを乗せることについて激しく議論している。";
+
+type BgmType = 'none' | 'relaxed' | 'suspense' | 'custom';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [situation, setSituation] = useState(INITIAL_SITUATION);
+  
+  // BGM State
+  const [bgmType, setBgmType] = useState<BgmType>('none');
+  const [customBgmFile, setCustomBgmFile] = useState<File | null>(null);
+
   const [scriptData, setScriptData] = useState<ScriptData | null>(null);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
@@ -26,6 +34,7 @@ const App: React.FC = () => {
     if (audioContextRef.current.state === 'suspended') {
       audioContextRef.current.resume();
     }
+    return audioContextRef.current;
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -39,15 +48,24 @@ const App: React.FC = () => {
       };
       reader.readAsDataURL(file);
       
-      // Reset state on new image
-      setScriptData(null);
-      setAudioBuffer(null);
-      if (downloadUrl) {
-        URL.revokeObjectURL(downloadUrl);
-        setDownloadUrl(null);
-      }
-      setAppState('IDLE');
+      resetOutput();
     }
+  };
+
+  const handleCustomBgmUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setCustomBgmFile(e.target.files[0]);
+    }
+  };
+
+  const resetOutput = () => {
+    setScriptData(null);
+    setAudioBuffer(null);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
+    setAppState('IDLE');
   };
 
   const fileToBase64 = (file: File): Promise<string> => {
@@ -56,7 +74,7 @@ const App: React.FC = () => {
       reader.readAsDataURL(file);
       reader.onload = () => {
         const result = reader.result as string;
-        // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+        // Remove data URL prefix
         const base64 = result.split(',')[1];
         resolve(base64);
       };
@@ -64,9 +82,16 @@ const App: React.FC = () => {
     });
   };
 
+  const fileToAudioBuffer = async (file: File, ctx: AudioContext): Promise<AudioBuffer> => {
+    const arrayBuffer = await file.arrayBuffer();
+    // Use decodeAudioData from API, note: this is the native one, not our util wrapper which takes Uint8Array
+    // We need to use native decodeAudioData for full files (mp3/wav)
+    return await ctx.decodeAudioData(arrayBuffer);
+  };
+
   const handleGenerate = async () => {
     if (!imageFile || !situation) return;
-    initAudioContext();
+    const ctx = initAudioContext();
     
     try {
       setAppState('ANALYZING');
@@ -77,22 +102,42 @@ const App: React.FC = () => {
       const script = await generateScriptFromImage(base64Image, mimeType, situation);
       setScriptData(script);
 
-      // Step 2: Synthesize Audio
+      // Step 2: Synthesize Voice Audio
       setAppState('SYNTHESIZING');
       const audioBase64 = await synthesizeScriptAudio(script);
-      
-      // Step 3: Decode Audio & Create Downloadable WAV
       const pcmBytes = decodeBase64(audioBase64);
-      if (audioContextRef.current) {
-        const buffer = await decodeAudioData(pcmBytes, audioContextRef.current);
-        setAudioBuffer(buffer);
-        
-        const wavBlob = createWavBlob(buffer);
-        const url = URL.createObjectURL(wavBlob);
-        setDownloadUrl(url);
+      let finalBuffer = await decodeAudioData(pcmBytes, ctx);
 
-        setAppState('IDLE');
+      // Step 3: Mix BGM if selected
+      if (bgmType !== 'none') {
+        try {
+          let bgmBuffer: AudioBuffer | null = null;
+          
+          if (bgmType === 'custom' && customBgmFile) {
+            bgmBuffer = await fileToAudioBuffer(customBgmFile, ctx);
+          } else if (bgmType === 'relaxed') {
+            bgmBuffer = await generateProceduralBgm('relaxed', ctx.sampleRate);
+          } else if (bgmType === 'suspense') {
+            bgmBuffer = await generateProceduralBgm('suspense', ctx.sampleRate);
+          }
+
+          if (bgmBuffer) {
+             // Mix voice with BGM (Volume 0.2 for BGM)
+             finalBuffer = mixAudioBuffers(finalBuffer, bgmBuffer, 0.2, ctx);
+          }
+        } catch (e) {
+          console.warn("Failed to apply BGM:", e);
+          // Continue with just voice if BGM fails
+        }
       }
+
+      // Step 4: Finalize
+      setAudioBuffer(finalBuffer);
+      const wavBlob = createWavBlob(finalBuffer);
+      const url = URL.createObjectURL(wavBlob);
+      setDownloadUrl(url);
+
+      setAppState('IDLE');
 
     } catch (error) {
       console.error("Error generating content:", error);
@@ -175,12 +220,59 @@ const App: React.FC = () => {
               />
             </div>
 
+            {/* Background Music Selector */}
+            <div className="space-y-3 pt-2">
+              <label className="block text-sm font-medium text-slate-300 flex items-center gap-2">
+                <Music className="w-4 h-4 text-indigo-400" />
+                Background Music
+              </label>
+              
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(['none', 'relaxed', 'suspense', 'custom'] as BgmType[]).map((type) => (
+                   <button
+                     key={type}
+                     onClick={() => setBgmType(type)}
+                     className={`
+                       px-3 py-2 rounded-lg text-sm font-medium capitalize border transition-all
+                       ${bgmType === type 
+                         ? 'bg-indigo-600 border-indigo-500 text-white' 
+                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600'
+                       }
+                     `}
+                   >
+                     {type}
+                   </button>
+                ))}
+              </div>
+
+              {bgmType === 'custom' && (
+                <div className="mt-2 animate-in fade-in slide-in-from-top-2">
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    onChange={handleCustomBgmUpload}
+                    className="block w-full text-sm text-slate-400
+                      file:mr-4 file:py-2 file:px-4
+                      file:rounded-full file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-slate-800 file:text-indigo-400
+                      hover:file:bg-slate-700"
+                  />
+                  {customBgmFile && (
+                    <p className="text-xs text-indigo-300 mt-1 truncate">
+                      Selected: {customBgmFile.name}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Action Button */}
             <button
               onClick={handleGenerate}
               disabled={!imageFile || !situation || appState === 'ANALYZING' || appState === 'SYNTHESIZING'}
               className={`
-                w-full py-4 px-6 rounded-xl font-semibold text-lg flex items-center justify-center gap-3 transition-all
+                w-full py-4 px-6 rounded-xl font-semibold text-lg flex items-center justify-center gap-3 transition-all mt-4
                 ${!imageFile || !situation 
                   ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 active:scale-[0.98]'

@@ -95,3 +95,100 @@ export const createWavBlob = (audioBuffer: AudioBuffer): Blob => {
 
   return new Blob([buffer], { type: "audio/wav" });
 };
+
+// Mix voice buffer with a background music buffer (looping the BGM)
+export const mixAudioBuffers = (
+  base: AudioBuffer,
+  overlay: AudioBuffer,
+  overlayVolume: number,
+  ctx: AudioContext
+): AudioBuffer => {
+  const channels = base.numberOfChannels;
+  const length = base.length;
+  // Create output buffer with same properties as base (voice)
+  const mixed = ctx.createBuffer(channels, length, base.sampleRate);
+
+  for (let c = 0; c < channels; c++) {
+    const baseData = base.getChannelData(c);
+    // Handle mono overlay on stereo base if needed, or just cycle channels
+    const overlayData = overlay.getChannelData(c % overlay.numberOfChannels);
+    const mixedData = mixed.getChannelData(c);
+
+    for (let i = 0; i < length; i++) {
+      // Loop the overlay buffer
+      const overlaySample = overlayData[i % overlayData.length];
+      // Simple mix
+      mixedData[i] = baseData[i] + (overlaySample * overlayVolume);
+    }
+  }
+  return mixed;
+};
+
+// Generate simple procedural background audio
+export const generateProceduralBgm = async (
+  type: 'relaxed' | 'suspense',
+  sampleRate: number
+): Promise<AudioBuffer> => {
+  const duration = 10; // 10 seconds loop is enough to not sound too repetitive immediately
+  const length = sampleRate * duration;
+  const offlineCtx = new OfflineAudioContext(2, length, sampleRate);
+
+  if (type === 'relaxed') {
+    // Pink noise + Lowpass = Ocean/Wind
+    const bufferSize = length;
+    const noiseBuffer = offlineCtx.createBuffer(1, bufferSize, sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      const white = Math.random() * 2 - 1;
+      output[i] = (lastOut + (0.02 * white)) / 1.02;
+      lastOut = output[i];
+      output[i] *= 3.5; // Compensate for gain loss
+    }
+    
+    const source = offlineCtx.createBufferSource();
+    source.buffer = noiseBuffer;
+    
+    const filter = offlineCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 400;
+    
+    // Stereo spread
+    const merger = offlineCtx.createChannelMerger(2);
+    
+    source.connect(filter);
+    filter.connect(merger, 0, 0);
+    filter.connect(merger, 0, 1);
+    merger.connect(offlineCtx.destination);
+    
+    source.start();
+
+  } else if (type === 'suspense') {
+    // Dark drone: 2 Sawtooth waves slightly detuned + Lowpass
+    const osc1 = offlineCtx.createOscillator();
+    osc1.type = 'sawtooth';
+    osc1.frequency.value = 50;
+    
+    const osc2 = offlineCtx.createOscillator();
+    osc2.type = 'sawtooth';
+    osc2.frequency.value = 51; // Detuned for beating effect
+    
+    const gain = offlineCtx.createGain();
+    gain.gain.value = 0.15;
+    
+    const filter = offlineCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 150;
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(filter);
+    filter.connect(offlineCtx.destination);
+    
+    osc1.start();
+    osc2.start();
+  }
+
+  return await offlineCtx.startRendering();
+};
+
+let lastOut = 0;
