@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle } from 'lucide-react';
+import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download } from 'lucide-react';
 import { generateScriptFromImage, synthesizeScriptAudio } from './services/geminiService';
-import { decodeBase64, decodeAudioData, playAudioBuffer } from './services/audioUtils';
+import { decodeBase64, decodeAudioData, playAudioBuffer, createWavBlob } from './services/audioUtils';
 import { ScriptData, AppState } from './types';
 
 const INITIAL_SITUATION = "ピザにパイナップルを乗せることについて激しく議論している。";
@@ -13,6 +13,7 @@ const App: React.FC = () => {
   const [situation, setSituation] = useState(INITIAL_SITUATION);
   const [scriptData, setScriptData] = useState<ScriptData | null>(null);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
@@ -41,6 +42,10 @@ const App: React.FC = () => {
       // Reset state on new image
       setScriptData(null);
       setAudioBuffer(null);
+      if (downloadUrl) {
+        URL.revokeObjectURL(downloadUrl);
+        setDownloadUrl(null);
+      }
       setAppState('IDLE');
     }
   };
@@ -76,11 +81,16 @@ const App: React.FC = () => {
       setAppState('SYNTHESIZING');
       const audioBase64 = await synthesizeScriptAudio(script);
       
-      // Step 3: Decode Audio
+      // Step 3: Decode Audio & Create Downloadable WAV
       const pcmBytes = decodeBase64(audioBase64);
       if (audioContextRef.current) {
         const buffer = await decodeAudioData(pcmBytes, audioContextRef.current);
         setAudioBuffer(buffer);
+        
+        const wavBlob = createWavBlob(buffer);
+        const url = URL.createObjectURL(wavBlob);
+        setDownloadUrl(url);
+
         setAppState('IDLE');
       }
 
@@ -240,26 +250,39 @@ const App: React.FC = () => {
                 {/* Audio Controls */}
                 <div className="pt-4 border-t border-slate-800 mt-auto">
                    {audioBuffer ? (
-                     <button
-                      onClick={togglePlayback}
-                      className={`
-                        w-full py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors
-                        ${isPlaying 
-                          ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20' 
-                          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
-                        }
-                      `}
-                     >
-                       {isPlaying ? (
-                         <>
-                           <StopCircle className="w-5 h-5" /> Stop Playback
-                         </>
-                       ) : (
-                         <>
-                           <Volume2 className="w-5 h-5" /> Play Audio
-                         </>
+                     <div className="flex gap-2 w-full">
+                       <button
+                        onClick={togglePlayback}
+                        className={`
+                          flex-1 py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors
+                          ${isPlaying 
+                            ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20' 
+                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+                          }
+                        `}
+                       >
+                         {isPlaying ? (
+                           <>
+                             <StopCircle className="w-5 h-5" /> Stop
+                           </>
+                         ) : (
+                           <>
+                             <Volume2 className="w-5 h-5" /> Play
+                           </>
+                         )}
+                       </button>
+
+                       {downloadUrl && (
+                         <a
+                           href={downloadUrl}
+                           download="photo-voice-actor.wav"
+                           className="px-4 rounded-lg font-medium flex items-center justify-center bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 hover:text-white transition-colors"
+                           title="Download Audio"
+                         >
+                           <Download className="w-5 h-5" />
+                         </a>
                        )}
-                     </button>
+                     </div>
                    ) : (
                      <div className="w-full py-3 text-center text-slate-500 text-sm italic">
                         Audio not available
