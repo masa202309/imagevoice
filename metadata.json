@@ -1,0 +1,5 @@
+{
+  "name": "Photo Voice Actor",
+  "description": "Upload a photo of people, set a situation, and hear them speak with voices matched to their appearance.",
+  "requestFramePermissions": []
+}
