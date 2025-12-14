@@ -1,12 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download, Music } from 'lucide-react';
+import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download, Music, RefreshCw } from 'lucide-react';
 import { generateScriptFromImage, synthesizeScriptAudio } from './services/geminiService';
 import { decodeBase64, decodeAudioData, playAudioBuffer, createWavBlob, mixAudioBuffers, generateProceduralBgm } from './services/audioUtils';
-import { ScriptData, AppState } from './types';
+import { ScriptData, AppState, Character } from './types';
 
 const INITIAL_SITUATION = "ピザにパイナップルを乗せることについて激しく議論している。";
 
 type BgmType = 'none' | 'relaxed' | 'suspense' | 'custom';
+
+const VOICE_OPTIONS = [
+  { id: 'Puck', label: 'Puck (Male, Energetic)', color: 'bg-blue-400' },
+  { id: 'Charon', label: 'Charon (Male, Deep)', color: 'bg-purple-400' },
+  { id: 'Kore', label: 'Kore (Female, Soothing)', color: 'bg-pink-400' },
+  { id: 'Fenrir', label: 'Fenrir (Male, Strong)', color: 'bg-orange-400' },
+  { id: 'Zephyr', label: 'Zephyr (Female, Calm)', color: 'bg-teal-400' },
+] as const;
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('IDLE');
@@ -84,26 +92,16 @@ const App: React.FC = () => {
 
   const fileToAudioBuffer = async (file: File, ctx: AudioContext): Promise<AudioBuffer> => {
     const arrayBuffer = await file.arrayBuffer();
-    // Use decodeAudioData from API, note: this is the native one, not our util wrapper which takes Uint8Array
-    // We need to use native decodeAudioData for full files (mp3/wav)
     return await ctx.decodeAudioData(arrayBuffer);
   };
 
-  const handleGenerate = async () => {
-    if (!imageFile || !situation) return;
+  // Reusable function to generate audio from script
+  const generateAudio = async (script: ScriptData) => {
     const ctx = initAudioContext();
+    setAppState('SYNTHESIZING');
     
     try {
-      setAppState('ANALYZING');
-      const base64Image = await fileToBase64(imageFile);
-      const mimeType = imageFile.type;
-
-      // Step 1: Analyze & Write Script
-      const script = await generateScriptFromImage(base64Image, mimeType, situation);
-      setScriptData(script);
-
       // Step 2: Synthesize Voice Audio
-      setAppState('SYNTHESIZING');
       const audioBase64 = await synthesizeScriptAudio(script);
       const pcmBytes = decodeBase64(audioBase64);
       let finalBuffer = await decodeAudioData(pcmBytes, ctx);
@@ -127,7 +125,6 @@ const App: React.FC = () => {
           }
         } catch (e) {
           console.warn("Failed to apply BGM:", e);
-          // Continue with just voice if BGM fails
         }
       }
 
@@ -138,10 +135,54 @@ const App: React.FC = () => {
       setDownloadUrl(url);
 
       setAppState('IDLE');
+    } catch (error) {
+       console.error("Error synthesizing:", error);
+       setAppState('ERROR');
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!imageFile || !situation) return;
+    
+    try {
+      setAppState('ANALYZING');
+      const base64Image = await fileToBase64(imageFile);
+      const mimeType = imageFile.type;
+
+      // Step 1: Analyze & Write Script
+      const script = await generateScriptFromImage(base64Image, mimeType, situation);
+      setScriptData(script);
+
+      // Immediately generate audio with initial assignments
+      await generateAudio(script);
 
     } catch (error) {
       console.error("Error generating content:", error);
       setAppState('ERROR');
+    }
+  };
+
+  const handleRegenerateAudio = () => {
+    if (scriptData) {
+      generateAudio(scriptData);
+    }
+  };
+
+  const updateCharacterVoice = (charId: string, newVoice: string) => {
+    setScriptData(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        characters: prev.characters.map(c => 
+          c.id === charId ? { ...c, assignedVoice: newVoice as any } : c
+        )
+      };
+    });
+    // Invalidate current audio since voice changed
+    setAudioBuffer(null);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
     }
   };
 
@@ -312,13 +353,32 @@ const App: React.FC = () => {
                 {/* Title & Cast */}
                 <div className="mb-6 border-b border-slate-800 pb-4">
                   <h2 className="text-2xl font-bold text-white mb-2">{scriptData.title}</h2>
-                  <div className="flex flex-wrap gap-2">
-                    {scriptData.characters.map(char => (
-                      <span key={char.id} className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-800 rounded-full text-xs font-medium text-slate-300 border border-slate-700">
-                        <span className={`w-2 h-2 rounded-full ${getVoiceColor(char.assignedVoice)}`}></span>
-                        {char.name} ({char.assignedVoice})
-                      </span>
-                    ))}
+                  <div className="flex flex-col gap-2 mt-3">
+                    <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Cast & Voice Models</span>
+                    <div className="flex flex-wrap gap-3">
+                      {scriptData.characters.map(char => {
+                        const currentVoice = VOICE_OPTIONS.find(v => v.id === char.assignedVoice);
+                        return (
+                          <div key={char.id} className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-lg border border-slate-700 shadow-sm">
+                            <span className={`w-2.5 h-2.5 rounded-full ${currentVoice?.color || 'bg-gray-400'}`}></span>
+                            <div className="flex flex-col">
+                              <span className="text-xs font-semibold text-slate-200">{char.name}</span>
+                              <select
+                                value={char.assignedVoice}
+                                onChange={(e) => updateCharacterVoice(char.id, e.target.value)}
+                                className="bg-transparent border-none p-0 text-[10px] text-slate-400 focus:ring-0 cursor-pointer hover:text-indigo-400 transition-colors"
+                              >
+                                {VOICE_OPTIONS.map(opt => (
+                                  <option key={opt.id} value={opt.id} className="bg-slate-900 text-slate-200">
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
 
@@ -341,7 +401,14 @@ const App: React.FC = () => {
 
                 {/* Audio Controls */}
                 <div className="pt-4 border-t border-slate-800 mt-auto">
-                   {audioBuffer ? (
+                   {!audioBuffer && scriptData && appState !== 'SYNTHESIZING' ? (
+                     <button
+                      onClick={handleRegenerateAudio}
+                      className="w-full py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                     >
+                       <RefreshCw className="w-5 h-5" /> Regenerate Audio
+                     </button>
+                   ) : audioBuffer ? (
                      <div className="flex gap-2 w-full">
                        <button
                         onClick={togglePlayback}
@@ -377,7 +444,11 @@ const App: React.FC = () => {
                      </div>
                    ) : (
                      <div className="w-full py-3 text-center text-slate-500 text-sm italic">
-                        Audio not available
+                        {appState === 'SYNTHESIZING' ? (
+                          <span className="flex items-center justify-center gap-2">
+                             <Loader2 className="w-4 h-4 animate-spin" /> Synthesizing...
+                          </span>
+                        ) : 'Audio not available'}
                      </div>
                    )}
                 </div>
@@ -398,17 +469,5 @@ const App: React.FC = () => {
     </div>
   );
 };
-
-// Helper to color code voices
-function getVoiceColor(voice: string) {
-  switch (voice) {
-    case 'Puck': return 'bg-blue-400';
-    case 'Charon': return 'bg-purple-400';
-    case 'Kore': return 'bg-pink-400';
-    case 'Fenrir': return 'bg-orange-400';
-    case 'Zephyr': return 'bg-teal-400';
-    default: return 'bg-gray-400';
-  }
-}
 
 export default App;
