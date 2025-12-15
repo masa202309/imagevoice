@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download, Music, RefreshCw } from 'lucide-react';
+import { Upload, Play, Loader2, Mic, Image as ImageIcon, Sparkles, Volume2, StopCircle, Download, Music, RefreshCw, Pencil } from 'lucide-react';
 import { generateScriptFromImage, synthesizeScriptAudio } from './services/geminiService';
 import { decodeBase64, decodeAudioData, playAudioBuffer, createWavBlob, mixAudioBuffers, generateProceduralBgm } from './services/audioUtils';
 import { ScriptData, AppState, Character } from './types';
@@ -179,6 +179,21 @@ const App: React.FC = () => {
       };
     });
     // Invalidate current audio since voice changed
+    setAudioBuffer(null);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
+  };
+
+  const handleLineChange = (index: number, newText: string) => {
+    setScriptData(prev => {
+      if (!prev) return null;
+      const newLines = [...prev.lines];
+      newLines[index] = { ...newLines[index], text: newText };
+      return { ...prev, lines: newLines };
+    });
+    // Invalidate current audio since script changed
     setAudioBuffer(null);
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
@@ -391,8 +406,15 @@ const App: React.FC = () => {
                         <span className="text-xs font-bold text-indigo-400 uppercase tracking-wide ml-1">
                           {char?.name}
                         </span>
-                        <div className="p-3 bg-slate-800/50 rounded-lg rounded-tl-none border border-slate-800 text-slate-200 leading-relaxed">
-                          "{line.text}"
+                        <div className="relative group">
+                          <textarea
+                            value={line.text}
+                            onChange={(e) => handleLineChange(idx, e.target.value)}
+                            className="w-full p-3 bg-slate-800/50 rounded-lg rounded-tl-none border border-slate-800 text-slate-200 leading-relaxed focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 outline-none resize-y min-h-[60px] transition-colors hover:bg-slate-800"
+                          />
+                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                             <Pencil className="w-3 h-3 text-slate-500" />
+                          </div>
                         </div>
                       </div>
                     );
